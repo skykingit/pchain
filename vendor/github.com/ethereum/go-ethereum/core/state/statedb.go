@@ -57,6 +57,10 @@ type StateDB struct {
 	stateObjects      map[common.Address]*stateObject
 	stateObjectsDirty map[common.Address]struct{}
 
+	// Cache of Delegate Refund Set
+	delegateRefundSet      DelegateRefundSet
+	delegateRefundSetDirty bool
+
 	// DB error.
 	// State objects are used by the consensus core and VM which are
 	// unable to deal with database-level errors. Any error that occurs
@@ -89,13 +93,16 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &StateDB{
-		db:                db,
-		trie:              tr,
-		stateObjects:      make(map[common.Address]*stateObject),
-		stateObjectsDirty: make(map[common.Address]struct{}),
-		logs:              make(map[common.Hash][]*types.Log),
-		preimages:         make(map[common.Hash][]byte),
+		db:                     db,
+		trie:                   tr,
+		stateObjects:           make(map[common.Address]*stateObject),
+		stateObjectsDirty:      make(map[common.Address]struct{}),
+		delegateRefundSet:      make(DelegateRefundSet),
+		delegateRefundSetDirty: false,
+		logs:                   make(map[common.Hash][]*types.Log),
+		preimages:              make(map[common.Hash][]byte),
 	}, nil
 }
 
@@ -120,6 +127,7 @@ func (self *StateDB) Reset(root common.Hash) error {
 	self.trie = tr
 	self.stateObjects = make(map[common.Address]*stateObject)
 	self.stateObjectsDirty = make(map[common.Address]struct{})
+	self.delegateRefundSet = make(DelegateRefundSet)
 	self.thash = common.Hash{}
 	self.bhash = common.Hash{}
 	self.txIndex = 0
@@ -492,19 +500,14 @@ func (db *StateDB) ForEachStorage(addr common.Address, cb func(key, value common
 	if so == nil {
 		return
 	}
-
-	// When iterating over the storage check the cache first
-	for h, value := range so.cachedStorage {
-		cb(h, value)
-	}
-
 	it := trie.NewIterator(so.getTrie(db.db).NodeIterator(nil))
 	for it.Next() {
-		// ignore cached values
 		key := common.BytesToHash(db.trie.GetKey(it.Key))
-		if _, ok := so.cachedStorage[key]; !ok {
-			cb(key, common.BytesToHash(it.Value))
+		if value, dirty := so.dirtyStorage[key]; dirty {
+			cb(key, value)
+			continue
 		}
+		cb(key, common.BytesToHash(it.Value))
 	}
 }
 
@@ -538,6 +541,24 @@ func (db *StateDB) ForEachTX3(addr common.Address, cb func(tx3 common.Hash) bool
 	}
 }
 
+func (db *StateDB) ForEachProxied(addr common.Address, cb func(key common.Address, proxiedBalance, depositProxiedBalance, pendingRefundBalance *big.Int) bool) {
+	so := db.getStateObject(addr)
+	if so == nil {
+		return
+	}
+	it := trie.NewIterator(so.getProxiedTrie(db.db).NodeIterator(nil))
+	for it.Next() {
+		key := common.BytesToAddress(db.trie.GetKey(it.Key))
+		if value, dirty := so.dirtyProxied[key]; dirty {
+			cb(key, value.ProxiedBalance, value.DepositProxiedBalance, value.PendingRefundBalance)
+			continue
+		}
+		var apb accountProxiedBalance
+		rlp.DecodeBytes(it.Value, &apb)
+		cb(key, apb.ProxiedBalance, apb.DepositProxiedBalance, apb.PendingRefundBalance)
+	}
+}
+
 // Copy creates a deep, independent copy of the state.
 // Snapshots of the copied state cannot be applied to the copy.
 func (self *StateDB) Copy() *StateDB {
@@ -546,19 +567,24 @@ func (self *StateDB) Copy() *StateDB {
 
 	// Copy all the basic fields, initialize the memory ones
 	state := &StateDB{
-		db:                self.db,
-		trie:              self.db.CopyTrie(self.trie),
-		stateObjects:      make(map[common.Address]*stateObject, len(self.stateObjectsDirty)),
-		stateObjectsDirty: make(map[common.Address]struct{}, len(self.stateObjectsDirty)),
-		refund:            self.refund,
-		logs:              make(map[common.Hash][]*types.Log, len(self.logs)),
-		logSize:           self.logSize,
-		preimages:         make(map[common.Hash][]byte),
+		db:                     self.db,
+		trie:                   self.db.CopyTrie(self.trie),
+		stateObjects:           make(map[common.Address]*stateObject, len(self.stateObjectsDirty)),
+		stateObjectsDirty:      make(map[common.Address]struct{}, len(self.stateObjectsDirty)),
+		delegateRefundSet:      make(DelegateRefundSet, len(self.delegateRefundSet)),
+		delegateRefundSetDirty: self.delegateRefundSetDirty,
+		refund:                 self.refund,
+		logs:                   make(map[common.Hash][]*types.Log, len(self.logs)),
+		logSize:                self.logSize,
+		preimages:              make(map[common.Hash][]byte),
 	}
 	// Copy the dirty states, logs, and preimages
 	for addr := range self.stateObjectsDirty {
 		state.stateObjects[addr] = self.stateObjects[addr].deepCopy(state, state.MarkStateObjectDirty)
 		state.stateObjectsDirty[addr] = struct{}{}
+	}
+	for addr := range self.delegateRefundSet {
+		state.delegateRefundSet[addr] = struct{}{}
 	}
 	for hash, logs := range self.logs {
 		state.logs[hash] = make([]*types.Log, len(logs))
@@ -615,9 +641,16 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			stateObject.updateRoot(s.db)
 			stateObject.updateTX1Root(s.db)
 			stateObject.updateTX3Root(s.db)
+			stateObject.updateProxiedRoot(s.db)
 			s.updateStateObject(stateObject)
 		}
 	}
+
+	// Update Delegate Refund Set if something changed
+	if s.delegateRefundSetDirty {
+		s.commitDelegateRefundSet()
+	}
+
 	// Invalidate journal because reverting across transactions is not allowed.
 	s.clearJournalAndRefund()
 }
@@ -695,11 +728,22 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 			if err := stateObject.CommitTX3Trie(s.db); err != nil {
 				return common.Hash{}, err
 			}
+			// Write any Proxied Delegate Balance changes in the state object to its proxied trie.
+			if err := stateObject.CommitProxiedTrie(s.db); err != nil {
+				return common.Hash{}, err
+			}
 			// Update the object in the main account trie.
 			s.updateStateObject(stateObject)
 		}
 		delete(s.stateObjectsDirty, addr)
 	}
+
+	// Commit Delegate Refund Set to the trie
+	if s.delegateRefundSetDirty {
+		s.commitDelegateRefundSet()
+		s.delegateRefundSetDirty = false
+	}
+
 	// Write trie changes.
 	root, err = s.trie.Commit(func(leaf []byte, parent common.Hash) error {
 		var account Account
@@ -714,6 +758,9 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 		}
 		if account.TX3Root != emptyState {
 			s.db.TrieDB().Reference(account.TX3Root, parent)
+		}
+		if account.ProxiedRoot != emptyState {
+			s.db.TrieDB().Reference(account.ProxiedRoot, parent)
 		}
 		code := common.BytesToHash(account.CodeHash)
 		if code != emptyCode {

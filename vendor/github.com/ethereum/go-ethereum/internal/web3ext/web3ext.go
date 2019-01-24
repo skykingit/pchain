@@ -31,6 +31,10 @@ var Modules = map[string]string{
 	"swarmfs":    SWARMFS_JS,
 	"txpool":     TxPool_JS,
 	"istanbul":   Istanbul_JS,
+	// PChain JS
+	"chain": Chain_JS,
+	"tdm":   Tdm_JS,
+	"del":   Del_JS,
 }
 
 const Chequebook_JS = `
@@ -432,6 +436,12 @@ web3._extend({
 			params: 2,
 			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter, web3._extend.utils.toHex]
 		}),
+		new web3._extend.Method({
+			name: 'getFullBalance',
+			call: 'eth_getFullBalance',
+			params: 3,
+			inputFormatter: [web3._extend.formatters.inputAddressFormatter, web3._extend.formatters.inputDefaultBlockNumberFormatter, null]
+		}),
 	],
 	properties: [
 		new web3._extend.Property({
@@ -678,5 +688,125 @@ web3._extend({
 			getter: 'istanbul_candidates'
 		}),
 	]
+});
+`
+
+const Chain_JS = `
+web3._extend({
+	property: 'chain',
+	methods:
+	[
+		new web3._extend.Method({
+			name: 'createChildChain',
+			call: 'chain_createChildChain',
+			params: 3
+		}),
+		new web3._extend.Method({
+			name: 'joinChildChain',
+			call: 'chain_joinChildChain',
+			params: 7
+		}),
+		new web3._extend.Method({
+			name: 'depositInMainChain',
+			call: 'chain_depositInMainChain',
+			params: 5,
+			inputFormatter: [null]
+		}),
+		new web3._extend.Method({
+			name: 'depositInChildChain',
+			call: 'chain_depositInChildChain',
+			params: 3
+		}),
+		new web3._extend.Method({
+			name: 'withdrawFromChildChain',
+			call: 'chain_withdrawFromChildChain',
+			params: 4
+		}),
+		new web3._extend.Method({
+			name: 'withdrawFromMainChain',
+			call: 'chain_withdrawFromMainChain',
+			params: 5
+		}),
+		new web3._extend.Method({
+			name: 'getAllChains',
+			call: 'chain_getAllChains'
+		}),
+		new web3._extend.Method({
+			name: 'signAddress',
+			call: 'chain_signAddress',
+			params: 2
+		})
+	],
+	properties:
+	[]
+});
+`
+
+const Tdm_JS = `
+web3._extend({
+	property: 'tdm',
+	methods:
+	[
+		new web3._extend.Method({
+			name: 'voteNextEpoch',
+			call: 'tdm_voteNextEpoch',
+			params: 4
+		}),
+		new web3._extend.Method({
+			name: 'revealVote',
+			call: 'tdm_revealVote',
+			params: 7
+		}),
+		new web3._extend.Method({
+			name: 'getCurrentEpochNumber',
+			call: 'tdm_getCurrentEpochNumber'
+		}),
+		new web3._extend.Method({
+			name: 'getEpoch',
+			call: 'tdm_getEpoch',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'getNextEpochVote',
+			call: 'tdm_getNextEpochVote'
+		}),
+		new web3._extend.Method({
+			name: 'getNextEpochValidators',
+			call: 'tdm_getNextEpochValidators'
+		})
+	],
+	properties:
+	[]
+});
+`
+
+const Del_JS = `
+web3._extend({
+	property: 'del',
+	methods:
+	[
+		new web3._extend.Method({
+			name: 'delegate',
+			call: 'del_delegate',
+			params: 5
+		}),
+		new web3._extend.Method({
+			name: 'cancelDelegate',
+			call: 'del_cancelDelegate',
+			params: 5
+		}),
+		new web3._extend.Method({
+			name: 'applyCandidate',
+			call: 'del_applyCandidate',
+			params: 5
+		}),
+		new web3._extend.Method({
+			name: 'cancelCandidate',
+			call: 'del_cancelCandidate',
+			params: 3
+		})
+	],
+	properties:
+	[]
 });
 `

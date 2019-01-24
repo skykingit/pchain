@@ -360,7 +360,6 @@ func (sb *backend) VerifySeal(chain consensus.ChainReader, header *types.Header)
 // rules of a particular engine. The changes are executed inline.
 func (sb *backend) Prepare(chain consensus.ChainReader, header *types.Header) error {
 
-	header.Coinbase = common.Address{}
 	header.Nonce = types.TendermintEmptyNonce
 	header.MixDigest = types.TendermintDigest
 
@@ -453,13 +452,7 @@ func (sb *backend) Finalize(chain consensus.ChainReader, header *types.Header, s
 	}
 
 	// Check the Epoch switch and update their account balance accordingly (Refund the Locked Balance)
-	if ok, newValidators, refunds, _ := sb.core.consensusState.Epoch.ShouldEnterNewEpoch(header.Number.Uint64()); ok {
-		// Create a new Change Epoch Op. (Epoch Op should be the last one to be execute)
-		for _, r := range refunds {
-			state.SubDepositBalance(r.Address, r.Amount)
-			state.AddBalance(r.Address, r.Amount)
-		}
-
+	if ok, newValidators, _ := sb.core.consensusState.Epoch.ShouldEnterNewEpoch(header.Number.Uint64(), state); ok {
 		ops.Append(&tdmTypes.SwitchEpochOp{
 			NewValidators: newValidators,
 		})
